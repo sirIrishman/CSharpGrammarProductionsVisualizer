@@ -12,9 +12,18 @@ namespace CSharpGrammarProductionsVisualizer {
     class Program {
         static void Main(string[] args) {
             string specDocPath = GetCSharpSpecificationPath(args);
+
+            Console.Write("Parsing...");
             IList<string> gpNodes = ParseGPFromHtml(specDocPath);
+            Console.WriteLine(" Done");
+
+            Console.Write("Building...");
             string resultDocPath = BuildGPHtmlDocument(gpNodes);
+            Console.WriteLine(" Done");
+
+            Console.Write("Opening...");
             Process.Start(resultDocPath);
+            Console.WriteLine(" Done");
         }
 
         static string GetCSharpSpecificationPath(string[] args) {
@@ -31,9 +40,30 @@ namespace CSharpGrammarProductionsVisualizer {
             doc.Load(htmlFilePath);
             return doc.DocumentNode
                 .SelectNodes("//p[@style='margin-left: 1.91cm; text-indent: -0.64cm; margin-bottom: 0.21cm; line-height: 0.44cm; page-break-inside: avoid']")
-                .Select(node => node.OuterHtml)
+                .Select(node => CleanupGPNodeHtml(node).OuterHtml)
                 .ToList();
         }
+        static HtmlNode CleanupGPNodeHtml(HtmlNode gpNode) {
+            Contract.Requires(gpNode != null);
+            gpNode.Attributes.Remove("style");
+            gpNode.Attributes.Add("class", "symbol");
+            return CleanupNodeHtml(gpNode);
+        }
+        static HtmlNode CleanupNodeHtml(HtmlNode node) {
+            Contract.Requires(node != null);
+            foreach(var fontChildNode in node.ChildNodes.Where(n => n.Name.Equals("font", StringComparison.OrdinalIgnoreCase)).ToList()) {
+                var replacingNode = node.OwnerDocument.CreateElement("span");
+                replacingNode.Attributes.Add("class", "terminal-symbol");
+                replacingNode.InnerHtml = fontChildNode.FirstChild.InnerHtml; // the font node is doubled
+                node.ChildNodes.Insert(node.ChildNodes.GetNodeIndex(fontChildNode), replacingNode);
+                node.RemoveChild(fontChildNode);
+            }
+            foreach(var childNode in node.ChildNodes) {
+                CleanupNodeHtml(childNode);
+            }
+            return node;
+        }
+
         static string BuildGPHtmlDocument(IList<string> gpNodes) {
             Contract.Requires(gpNodes != null);
             var builder = new StringBuilder();
