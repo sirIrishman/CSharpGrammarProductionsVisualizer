@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.Diagnostics.Contracts;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 
 namespace CSharpGrammarProductionsVisualizer {
@@ -22,7 +21,7 @@ namespace CSharpGrammarProductionsVisualizer {
             Console.WriteLine(" Done");
 
             Console.Write("Opening...");
-            Process.Start(resultDocPath);
+            Process.Start(@"c:\Program Files (x86)\Google\Chrome\Application\chrome.exe", resultDocPath);
             Console.WriteLine(" Done");
         }
 
@@ -34,34 +33,85 @@ namespace CSharpGrammarProductionsVisualizer {
                 return args.First().Trim().Trim('"', '\'');
             }
         }
+
         static IList<string> ParseGPFromHtml(string htmlFilePath) {
             Contract.Requires(!string.IsNullOrWhiteSpace(htmlFilePath));
             var doc = new HtmlDocument();
             doc.Load(htmlFilePath);
+            var grammarSectionMark = doc.DocumentNode
+                .SelectSingleNode("//a[@name='_Toc251613491']");
+
             return doc.DocumentNode
                 .SelectNodes("//p[@style='margin-left: 1.91cm; text-indent: -0.64cm; margin-bottom: 0.21cm; line-height: 0.44cm; page-break-inside: avoid']")
-                .Select(node => CleanupGPNodeHtml(node).OuterHtml)
+                .Where(node => node.NodeType == HtmlNodeType.Element && node.Line >= grammarSectionMark.Line)
+                .Select(node => CleanupGPHtmlNode(node))
+                .GroupBy(node => node.ChildNodes.FindFirst("i").FirstChild.InnerText.Trim())
+                .Select(duplicatedNodeGroup => MergeNodeGroup(duplicatedNodeGroup))
+                //.OrderBy(node => node.InnerText.Trim())
+                .Select(node => node.OuterHtml)
                 .ToList();
         }
-        static HtmlNode CleanupGPNodeHtml(HtmlNode gpNode) {
+
+        static HtmlNode CleanupGPHtmlNode(HtmlNode gpNode) {
             Contract.Requires(gpNode != null);
+            Contract.Requires(Contract.Result<HtmlNode>() != null);
+
             gpNode.Attributes.Remove("style");
-            gpNode.Attributes.Add("class", "symbol");
-            return CleanupNodeHtml(gpNode);
+            if(gpNode.Attributes.Contains("class")) {
+                gpNode.Attributes["class"].Value += " symbol";
+            } else {
+                gpNode.Attributes.Add("class", "symbol");
+            }
+            return CleanupHtmlNode(gpNode);
         }
-        static HtmlNode CleanupNodeHtml(HtmlNode node) {
+        static HtmlNode CleanupHtmlNode(HtmlNode node) {
             Contract.Requires(node != null);
-            foreach(var fontChildNode in node.ChildNodes.Where(n => n.Name.Equals("font", StringComparison.OrdinalIgnoreCase)).ToList()) {
+            Contract.Requires(Contract.Result<HtmlNode>() != null);
+
+            foreach(var langSpan in node.ChildNodes.Where(n => n.Name == "span" && n.Attributes.Contains("lang")).ToList()) {
+                langSpan.ReplaceWithChildNodes();
+            }
+            foreach(var fontChildNode in node.ChildNodes.Where(n => n.Name == "font").ToList()) {
                 var replacingNode = node.OwnerDocument.CreateElement("span");
                 replacingNode.Attributes.Add("class", "terminal-symbol");
                 replacingNode.InnerHtml = fontChildNode.FirstChild.InnerHtml; // the font node is doubled
                 node.ChildNodes.Insert(node.ChildNodes.GetNodeIndex(fontChildNode), replacingNode);
                 node.RemoveChild(fontChildNode);
             }
+            var ellipsises = new List<string> { "&hellip;", "..." };
+            foreach(var ellipsisLineNode in node.ChildNodes.Where(n => ellipsises.Contains(n.InnerText.Trim()) || n.Name == "br" && ellipsises.Contains(n.PreviousSibling?.InnerText?.Trim())).ToList()) {
+                ellipsisLineNode.Remove();
+            }
             foreach(var childNode in node.ChildNodes) {
-                CleanupNodeHtml(childNode);
+                CleanupHtmlNode(childNode);
             }
             return node;
+        }
+
+        static HtmlNode MergeNodeGroup(IEnumerable<HtmlNode> nodeGroup) {
+            Contract.Requires(nodeGroup != null);
+            Contract.Requires(Contract.Result<HtmlNode>() != null);
+
+            if(nodeGroup.Count() == 1) {
+                return nodeGroup.Single();
+            }
+            var acceptor = nodeGroup.First();
+            var donorGroupItems = nodeGroup
+                .Skip(1)
+                .Select(node => node.ChildNodes
+                    .FindFirst("i")
+                    .ChildNodes
+                    .Skip(2)
+                    .ToList()
+                );
+            var donorChildrenContainer = acceptor.ChildNodes.FindFirst("i");
+            foreach(var groupItems in donorGroupItems) {
+                donorChildrenContainer.AppendChild(donorChildrenContainer.OwnerDocument.CreateElement("br"));
+                foreach(var item in groupItems) {
+                    donorChildrenContainer.AppendChild(item);
+                }
+            }
+            return acceptor;
         }
 
         static string BuildGPHtmlDocument(IList<string> gpNodes) {
@@ -70,18 +120,10 @@ namespace CSharpGrammarProductionsVisualizer {
             foreach(var node in gpNodes) {
                 builder.Append(node).AppendLine();
             }
-            string template = GetTextFromEmbeddedResource("CSharpGrammarProductionsVisualizer.Template.html");
+            string template = AssemblyResourceHelper.GetAsText("CSharpGrammarProductionsVisualizer.Template.html");
             template = template.Replace("<!--placeholder-->", builder.ToString());
             File.WriteAllText("result.html", template);
             return Path.GetFullPath("result.html");
-        }
-        static string GetTextFromEmbeddedResource(string name) {
-            Contract.Requires(!string.IsNullOrWhiteSpace(name));
-            using(var resourceStream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)) {
-                using(var reader = new StreamReader(resourceStream)) {
-                    return reader.ReadToEnd();
-                }
-            }
         }
     }
 }
